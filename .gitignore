@@ -1,6 +1,9 @@
 src/secret_data/*
 !src/secret_data/README.md
 
+# Bot settings storage
+src/settings/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

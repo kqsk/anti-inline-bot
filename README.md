@@ -18,13 +18,43 @@ Modes and lists:
 - /whitelist_remove <bot_username>
 - /whitelist_list
 
-# Instalation
-- install requirements
-- create bot via BotFather
-- put token in src/secret_data/config.ini
-- start redis on 10001 port
-- start main.py with python
-- enjoy
+# Installation
+
+## Local Setup
+1. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+2. Create bot via BotFather and get token
+
+3. Configure token (choose one method):
+   - Create `.env` file in project root:
+     ```
+     TELEGRAM_API=your_token_here
+     ```
+   - Or put token in `src/secret_data/config.ini`:
+     ```ini
+     [credentials]
+     telegram-api=your_token_here
+     ```
+
+4. Run the bot:
+   ```bash
+   python -m src.main
+   ```
+
+## Deploy on Railway
+
+1. Create new project on Railway
+2. Connect your repository
+3. Set environment variable: `TELEGRAM_API` or `BOT_TOKEN` with your bot token
+4. Railway will automatically use `Procfile` or `railway.toml` to start the bot
+
+## Storage
+- Settings are stored in `src/settings/<chat_id>/` directory
+- Each chat has separate files: `policy.txt`, `deletion.txt`, `q.txt`, `blacklist.txt`, `whitelist.txt`
+- No Redis or external database required
 
 
 # Telegram
