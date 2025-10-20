@@ -1,0 +1,9 @@
+buddy_musicbot
+cryptobot
+gif
+pic
+pricenftbot
+send
+vkmusic_bot
+voiceshazambot
+xrocket

@@ -125,6 +125,9 @@ async def get_chat_dict(chat_id: int) -> dict:
     return {b'deletion': deletion.encode(), b'q': q.encode(), b'policy': policy.encode()}
 
 
+
+
+
 def save_chat_dict(chat_id: int, chat_dict: dict) -> None:
     chat_dir = _ensure_chat_dir(chat_id)
     policy = (chat_dict.get(b'policy', b'all') or b'all').decode()
