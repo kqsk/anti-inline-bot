@@ -1,11 +1,20 @@
-Hello, it is anti-inline bot
-I will delete all messages sended via bots
+Привет, это анти-инлайн бот
+Я буду удалять все сообщения, отправленные через инлайн-ботов
 
-Make me <b>admin</b> and allow me to <b>delete messeages</b>
+Сделайте меня <b>администратором</b> и дайте право на <b>удаление сообщений</b>
 
-Commands(only for admins):
-/start - show this text
-/toggle - toggle deletion messages via inline bots
-/q - toggle showing warning, when message sended via inline bot
+Команды (только для администраторов):
+/start - показать этот текст
+/toggle - переключить удаление сообщений от инлайн-ботов
+/q - переключить показ предупреждений при удалении
 
-Source code: https://github.com/TeaDove/Anti-Inline-Bot
+Режимы и списки:
+/mode all|blacklist|whitelist - установить политику
+/blacklist_add &lt;бот&gt; - добавить бота в чёрный список
+/blacklist_remove &lt;бот&gt; - удалить бота из чёрного списка
+/blacklist_list - показать чёрный список
+/whitelist_add &lt;бот&gt; - добавить бота в белый список
+/whitelist_remove &lt;бот&gt; - удалить бота из белого списка
+/whitelist_list - показать белый список
+
+Исходный код: https://github.com/TeaDove/Anti-Inline-Bot
