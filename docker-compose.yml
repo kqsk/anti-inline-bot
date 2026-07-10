@@ -1,0 +1,17 @@
+version: "3.8"
+
+services:
+  bot:
+    build: .
+    container_name: anti-inline-bot
+    restart: unless-stopped
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - ADMIN_IDS=${ADMIN_IDS}
+    volumes:
+      - bot_settings:/app/src/settings
+    # No ports — bot uses long polling, not webhooks
+
+volumes:
+  bot_settings:
+    driver: local
