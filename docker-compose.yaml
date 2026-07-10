@@ -6,7 +6,7 @@ services:
     container_name: anti-inline-bot
     restart: unless-stopped
     environment:
-      - TELEGRAM_API=${TELEGRAM_API}
+      - BOT_TOKEN=${BOT_TOKEN}
       - ADMIN_IDS=${ADMIN_IDS}
     volumes:
       - bot_settings:/app/src/settings
