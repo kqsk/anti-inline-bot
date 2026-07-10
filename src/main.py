@@ -28,6 +28,15 @@ if not token:
 if not token:
     raise RuntimeError("Telegram bot token not provided. Create .env with TELEGRAM_API=... (or set BOT_TOKEN), or put it into src/secret_data/config.ini under [credentials] telegram-api=")
 
+# Admin IDs — comma-separated list of Telegram user IDs who can manage the bot
+_admin_ids_raw = os.getenv("ADMIN_IDS", "")
+ADMIN_IDS: set = set()
+if _admin_ids_raw:
+    for uid in _admin_ids_raw.split(","):
+        uid = uid.strip()
+        if uid.isdigit():
+            ADMIN_IDS.add(int(uid))
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(name)-12s %(levelname)-8s %(message)s', datefmt='%y-%m-%d %H:%M')
 bot = Bot(token=token)
 dp = Dispatcher(bot)
@@ -127,7 +136,6 @@ async def get_chat_dict(chat_id: int) -> dict:
 
 
 
-
 def save_chat_dict(chat_id: int, chat_dict: dict) -> None:
     chat_dir = _ensure_chat_dir(chat_id)
     policy = (chat_dict.get(b'policy', b'all') or b'all').decode()
@@ -147,47 +155,102 @@ async def send(event: types.ChatMemberUpdated):
 
 @dp.message_handler(commands=['start', 'help'])
 async def send(message: types.Message):
-    await message.answer(START, parse_mode="html")
-
-
-@dp.message_handler(commands=['toggle'])
-async def send(message: types.Message):
     if message.chat.type == types.ChatType.PRIVATE:
-        await message.answer("Ошибка, вы не можете изменить эту настройку в личном чате")
+        # In DM: show group selector if admin
+        await _show_dm_panel(message)
     else:
-        member = await message.chat.get_member(message.from_user.id)
-        if (hasattr(member, 'status') and member.status != "member"):
-            chat_dict = await get_chat_dict(message.chat.id)
-            to_set = b'0' if chat_dict[b'deletion'] == b'1' else b'1'
-            chat_dict[b'deletion'] = to_set
-            save_chat_dict(message.chat.id, chat_dict)
-            await message.answer(f"Теперь я <b>{'буду' if to_set == b'1' else 'не буду'}</b> удалять сообщения от инлайн-ботов", parse_mode="html")
-        else:
-            try:
-                await message.delete()
-            except:
-                pass
-
-@dp.message_handler(commands=['q'])
-async def send(message: types.Message):
-    if message.chat.type == types.ChatType.PRIVATE:
-        await message.answer("Ошибка, вы не можете изменить эту настройку в личном чате")
-    else:
-        member = await message.chat.get_member(message.from_user.id)
-        if (hasattr(member, 'status') and member.status != "member"):
-            chat_dict = await get_chat_dict(message.chat.id)
-            to_set = b'0' if chat_dict[b'q'] == b'1' else b'1'
-            chat_dict[b'q'] = to_set
-            save_chat_dict(message.chat.id, chat_dict)
-            await message.answer(f"Теперь я <b>{'буду' if to_set == b'1' else 'не буду'}</b> скрывать предупреждения", parse_mode="html")
-        else:
-            try:
-                await message.delete()
-            except:
-                pass
+        await message.answer(START, parse_mode="html")
 
 
-# ================= Admin helpers and commands for policies and lists =================
+# ================= Inline keyboard builders =================
+
+MODE_NAMES = {'all': 'Все боты', 'blacklist': 'Чёрный список', 'whitelist': 'Белый список'}
+
+
+def _settings_keyboard(chat_dict: dict, pv_prefix: str = '') -> types.InlineKeyboardMarkup:
+    """Build main settings menu keyboard. pv_prefix embeds chat_id for DM callbacks."""
+    deletion_on = chat_dict[b'deletion'] == b'1'
+    warnings_shown = chat_dict[b'q'] == b'0'  # q=0 -> show warnings
+    policy = chat_dict.get(b'policy', b'all').decode()
+
+    def cb(action: str) -> str:
+        return f"{pv_prefix}{action}"
+
+    kb = types.InlineKeyboardMarkup()
+
+    # Deletion toggle
+    del_label = f"{'✅' if deletion_on else '❌'} Удаление: {'ВКЛ' if deletion_on else 'ВЫКЛ'}"
+    kb.add(types.InlineKeyboardButton(del_label, callback_data=cb("toggle:deletion")))
+
+    # Warning toggle
+    q_label = f"{'✅' if warnings_shown else '❌'} Предупреждения: {'ВКЛ' if warnings_shown else 'ВЫКЛ'}"
+    kb.add(types.InlineKeyboardButton(q_label, callback_data=cb("toggle:q")))
+
+    # Mode buttons — 3 in one row
+    kb.row(
+        types.InlineKeyboardButton(
+            f"{'✅ ' if policy == 'all' else ''}Все боты",
+            callback_data=cb("mode:all")
+        ),
+        types.InlineKeyboardButton(
+            f"{'✅ ' if policy == 'blacklist' else ''}Чёрный список",
+            callback_data=cb("mode:blacklist")
+        ),
+        types.InlineKeyboardButton(
+            f"{'✅ ' if policy == 'whitelist' else ''}Белый список",
+            callback_data=cb("mode:whitelist")
+        ),
+    )
+
+    # List management
+    kb.add(types.InlineKeyboardButton("📋 Чёрный список", callback_data=cb("list:blacklist")))
+    kb.add(types.InlineKeyboardButton("📋 Белый список", callback_data=cb("list:whitelist")))
+
+    # In DM: add "back to group selector" button
+    if pv_prefix:
+        kb.add(types.InlineKeyboardButton("📋 Выбрать другую группу", callback_data="group_selector"))
+
+    return kb
+
+
+def _list_keyboard(list_name: str, members: set, pv_prefix: str = '') -> types.InlineKeyboardMarkup:
+    """Build list view with per-item remove buttons."""
+    kb = types.InlineKeyboardMarkup(row_width=1)
+
+    def cb(action: str) -> str:
+        return f"{pv_prefix}{action}"
+
+    for username in sorted(members):
+        kb.add(types.InlineKeyboardButton(
+            f"❌ @{username}",
+            callback_data=cb(f"remove:{list_name}:{username}")
+        ))
+
+    kb.add(types.InlineKeyboardButton(
+        "➕ Добавить бота",
+        callback_data=cb(f"add_hint:{list_name}")
+    ))
+    kb.add(types.InlineKeyboardButton(
+        "↩ Назад к настройкам",
+        callback_data=cb("menu")
+    ))
+
+    return kb
+
+
+def _group_selector_keyboard(groups: list) -> types.InlineKeyboardMarkup:
+    """Build group selector for DM panel. `groups` is list of (chat_id, title)."""
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    for chat_id, title in groups:
+        short_title = title[:50] + "…" if len(title) > 50 else title
+        kb.add(types.InlineKeyboardButton(
+            f"💬 {short_title}",
+            callback_data=f"select_group:{chat_id}"
+        ))
+    return kb
+
+
+# ================= Admin helpers =================
 
 def _normalize_username(raw: str) -> str:
     if not raw:
@@ -198,17 +261,75 @@ def _normalize_username(raw: str) -> str:
     return raw.lower()
 
 
+def _is_bot_admin(user_id: int) -> bool:
+    """Check if user is in the global ADMIN_IDS list from ENV."""
+    if not ADMIN_IDS:
+        # No ADMIN_IDS configured — fall back to group-admin-only check
+        return True
+    return user_id in ADMIN_IDS
+
+
+async def _get_admin_groups(user_id: int) -> list:
+    """Scan settings dirs and return list of (chat_id, title) where user is admin.
+    Only checks groups that already have settings (bot was added there)."""
+    groups = []
+    if not SETTINGS_DIR.exists():
+        return groups
+    for chat_dir in sorted(SETTINGS_DIR.iterdir()):
+        if not chat_dir.is_dir():
+            continue
+        try:
+            chat_id = int(chat_dir.name)
+        except ValueError:
+            continue
+        try:
+            chat = await bot.get_chat(chat_id)
+            member = await chat.get_member(user_id)
+            if hasattr(member, 'status') and member.status in ('creator', 'administrator'):
+                title = chat.title or f"Чат {chat_id}"
+                groups.append((chat_id, title))
+        except Exception:
+            pass
+    return groups
+
+
+async def _show_dm_panel(message: types.Message):
+    """Show group selector or reject if user is not a bot admin."""
+    if not _is_bot_admin(message.from_user.id):
+        await message.answer("⛔ У вас нет доступа к управлению ботом.")
+        return
+    groups = await _get_admin_groups(message.from_user.id)
+    if not groups:
+        await message.answer(
+            "🔍 Вы не являетесь администратором ни в одной группе, где есть бот.\n\n"
+            "Добавьте бота в группу и сделайте себя администратором."
+        )
+        return
+    await message.answer(
+        "📋 <b>Выберите группу для настройки:</b>",
+        parse_mode="html",
+        reply_markup=_group_selector_keyboard(groups)
+    )
+
+
 async def _ensure_group_admin(message: types.Message) -> bool:
     logging.info(f"Checking admin rights for user {message.from_user.id} in chat {message.chat.id}")
     if message.chat.type == types.ChatType.PRIVATE:
-        await message.answer("Ошибка, вы не можете изменить эту настройку в личном чате")
+        await _show_dm_panel(message)
+        return False  # handled by _show_dm_panel, stop here
+    # Global admin check
+    if not _is_bot_admin(message.from_user.id):
+        try:
+            await message.delete()
+        except:
+            pass
         return False
+    # Group admin check
     member = await message.chat.get_member(message.from_user.id)
-    logging.info(f"Member object type: {type(member)}, status: {getattr(member, 'status', 'NO STATUS')}")
     if (hasattr(member, 'status') and member.status != "member"):
         logging.info(f"User is admin (status: {member.status})")
         return True
-    logging.info(f"User is NOT admin")
+    logging.info(f"User is NOT group admin")
     try:
         await message.delete()
     except:
@@ -216,41 +337,167 @@ async def _ensure_group_admin(message: types.Message) -> bool:
     return False
 
 
-@dp.message_handler(commands=['mode'])
-async def set_mode(message: types.Message):
-    logging.info(f"Received /mode command from user {message.from_user.id}")
+async def _ensure_admin_callback(call: types.CallbackQuery) -> bool:
+    """Admin check for inline button presses. DM callbacks check via embedded chat_id."""
+    logging.info(f"Checking admin rights for callback user {call.from_user.id}, data: {call.data}")
+
+    # Global admin check first
+    if not _is_bot_admin(call.from_user.id):
+        await call.answer("⛔ У вас нет доступа к управлению ботом.", show_alert=True)
+        return False
+
+    # DM callbacks — data starts with "pv:" or is "group_selector" or "select_group:"
+    if call.message.chat.type == types.ChatType.PRIVATE:
+        # These are always allowed (admin already checked above, groups verified on selection)
+        if call.data in ("group_selector",) or call.data.startswith("select_group:") or call.data.startswith("pv:"):
+            return True
+        # Unknown callback in DM — deny
+        await call.answer("Неизвестная команда.", show_alert=True)
+        return False
+
+    # Group chat callback — verify group admin
+    member = await call.message.chat.get_member(call.from_user.id)
+    if hasattr(member, 'status') and member.status != "member":
+        return True
+    await call.answer("Только администраторы могут изменять настройки.", show_alert=True)
+    return False
+
+
+# ================= Settings commands =================
+
+@dp.message_handler(commands=['settings', 'menu'])
+async def cmd_settings(message: types.Message):
+    """Show unified settings panel or DM group selector."""
+    logging.info(f"Received /settings from user {message.from_user.id}")
+
+    # DM panel
+    if message.chat.type == types.ChatType.PRIVATE:
+        await _show_dm_panel(message)
+        return
+
+    # Group chat
     if not await _ensure_group_admin(message):
-        logging.info("Admin check failed for /mode")
         return
     chat_dict = await get_chat_dict(message.chat.id)
-    # Extract arguments from message text
+    await message.answer(
+        "⚙️ <b>Настройки Anti-Inline бота</b>",
+        parse_mode="html",
+        reply_markup=_settings_keyboard(chat_dict)
+    )
+
+
+@dp.message_handler(commands=['toggle'])
+async def cmd_toggle(message: types.Message):
+    """Toggle deletion — shows keyboard."""
+    if message.chat.type == types.ChatType.PRIVATE:
+        await _show_dm_panel(message)
+        return
+    if not await _ensure_group_admin(message):
+        return
+
     args = ''
     if message.text:
         parts = message.text.split(maxsplit=1)
         if len(parts) > 1:
             args = parts[1].strip().lower()
 
-    logging.info(f"Mode command args: '{args}'")
+    chat_dict = await get_chat_dict(message.chat.id)
+    if args in ('on', '1', 'вкл', 'enable'):
+        to_set = b'1'
+    elif args in ('off', '0', 'выкл', 'disable'):
+        to_set = b'0'
+    else:
+        await message.answer(
+            f"⚙️ <b>Удаление сообщений от инлайн-ботов</b>\n"
+            f"Сейчас: <b>{'ВКЛЮЧЕНО' if chat_dict[b'deletion'] == b'1' else 'ВЫКЛЮЧЕНО'}</b>",
+            parse_mode="html",
+            reply_markup=_settings_keyboard(chat_dict)
+        )
+        return
+
+    chat_dict[b'deletion'] = to_set
+    save_chat_dict(message.chat.id, chat_dict)
+    await message.answer(
+        f"Теперь я <b>{'буду' if to_set == b'1' else 'не буду'}</b> удалять сообщения от инлайн-ботов",
+        parse_mode="html",
+        reply_markup=_settings_keyboard(chat_dict)
+    )
+
+
+@dp.message_handler(commands=['q'])
+async def cmd_q(message: types.Message):
+    """Toggle warnings — shows keyboard."""
+    if message.chat.type == types.ChatType.PRIVATE:
+        await _show_dm_panel(message)
+        return
+    if not await _ensure_group_admin(message):
+        return
+
+    args = ''
+    if message.text:
+        parts = message.text.split(maxsplit=1)
+        if len(parts) > 1:
+            args = parts[1].strip().lower()
+
+    chat_dict = await get_chat_dict(message.chat.id)
+    if args in ('on', '1', 'вкл', 'enable', 'show'):
+        to_set = b'0'  # q=0 means show warnings
+    elif args in ('off', '0', 'выкл', 'disable', 'hide'):
+        to_set = b'1'  # q=1 means hide warnings
+    else:
+        await message.answer(
+            f"⚙️ <b>Предупреждения при удалении</b>\n"
+            f"Сейчас: <b>{'ВЫКЛЮЧЕНЫ' if chat_dict[b'q'] == b'1' else 'ВКЛЮЧЕНЫ'}</b>",
+            parse_mode="html",
+            reply_markup=_settings_keyboard(chat_dict)
+        )
+        return
+
+    chat_dict[b'q'] = to_set
+    save_chat_dict(message.chat.id, chat_dict)
+    await message.answer(
+        f"Теперь я <b>{'буду' if to_set == b'1' else 'не буду'}</b> скрывать предупреждения",
+        parse_mode="html",
+        reply_markup=_settings_keyboard(chat_dict)
+    )
+
+
+@dp.message_handler(commands=['mode'])
+async def set_mode(message: types.Message):
+    logging.info(f"Received /mode command from user {message.from_user.id}")
+    if not await _ensure_group_admin(message):
+        return
+    chat_dict = await get_chat_dict(message.chat.id)
+    args = ''
+    if message.text:
+        parts = message.text.split(maxsplit=1)
+        if len(parts) > 1:
+            args = parts[1].strip().lower()
+
     if args in ('all', 'blacklist', 'whitelist'):
         chat_dict[b'policy'] = args.encode()
         save_chat_dict(message.chat.id, chat_dict)
-        mode_names = {'all': 'все боты', 'blacklist': 'чёрный список', 'whitelist': 'белый список'}
-        await message.answer(f"Режим установлен: <b>{mode_names.get(args, args)}</b>.", parse_mode="html")
+        await message.answer(
+            f"Режим установлен: <b>{MODE_NAMES.get(args, args)}</b>.",
+            parse_mode="html",
+            reply_markup=_settings_keyboard(chat_dict)
+        )
     else:
         current = chat_dict.get(b'policy', b'all').decode()
-        mode_names = {'all': 'все боты', 'blacklist': 'чёрный список', 'whitelist': 'белый список'}
         await message.answer(
-            "Использование: /mode all|blacklist|whitelist\n"
-            f"Текущий режим: <b>{mode_names.get(current, current)}</b>", parse_mode="html")
+            f"<b>Режим обработки инлайн-ботов</b>\nТекущий: <b>{MODE_NAMES.get(current, current)}</b>",
+            parse_mode="html",
+            reply_markup=_settings_keyboard(chat_dict)
+        )
 
+
+# ================= Blacklist / Whitelist text commands =================
 
 @dp.message_handler(commands=['blacklist_add', 'blacklist_remove', 'blacklist_list'])
 async def manage_blacklist(message: types.Message):
     logging.info(f"Received blacklist command from user {message.from_user.id}")
     if not await _ensure_group_admin(message):
-        logging.info("Admin check failed for blacklist command")
         return
-    # Extract command and arguments from message text
     cmd = ''
     args = ''
     if message.text:
@@ -260,8 +507,8 @@ async def manage_blacklist(message: types.Message):
         if len(parts) > 1:
             args = parts[1].strip()
 
-    logging.info(f"Blacklist command: {cmd}, args: '{args}'")
     key_name = "blacklist"
+    list_label = "чёрный список"
 
     if cmd == 'blacklist_add':
         username = _normalize_username(args)
@@ -269,29 +516,31 @@ async def manage_blacklist(message: types.Message):
             await message.answer("Использование: /blacklist_add <имя_бота>")
             return
         set_add(message.chat.id, key_name, username)
-        await message.answer(f"Бот @{username} добавлен в чёрный список.")
+        await message.answer(f"Бот @{username} добавлен в {list_label}.")
     elif cmd == 'blacklist_remove':
         username = _normalize_username(args)
         if not username:
             await message.answer("Использование: /blacklist_remove <имя_бота>")
             return
         set_remove(message.chat.id, key_name, username)
-        await message.answer(f"Бот @{username} удалён из чёрного списка.")
+        await message.answer(f"Бот @{username} удалён из {list_label}.")
     else:  # blacklist_list
         members = sorted(set_members(message.chat.id, key_name))
         if not members:
-            await message.answer("Чёрный список пуст.")
+            await message.answer("Чёрный список пуст.", reply_markup=_list_keyboard(key_name, set()))
         else:
-            await message.answer("Чёрный список:\n" + "\n".join(f"@{m}" for m in members))
+            await message.answer(
+                "📋 <b>Чёрный список</b>",
+                parse_mode="html",
+                reply_markup=_list_keyboard(key_name, set(members))
+            )
 
 
 @dp.message_handler(commands=['whitelist_add', 'whitelist_remove', 'whitelist_list'])
 async def manage_whitelist(message: types.Message):
     logging.info(f"Received whitelist command from user {message.from_user.id}")
     if not await _ensure_group_admin(message):
-        logging.info("Admin check failed for whitelist command")
         return
-    # Extract command and arguments from message text
     cmd = ''
     args = ''
     if message.text:
@@ -301,8 +550,8 @@ async def manage_whitelist(message: types.Message):
         if len(parts) > 1:
             args = parts[1].strip()
 
-    logging.info(f"Whitelist command: {cmd}, args: '{args}'")
     key_name = "whitelist"
+    list_label = "белый список"
 
     if cmd == 'whitelist_add':
         username = _normalize_username(args)
@@ -310,20 +559,229 @@ async def manage_whitelist(message: types.Message):
             await message.answer("Использование: /whitelist_add <имя_бота>")
             return
         set_add(message.chat.id, key_name, username)
-        await message.answer(f"Бот @{username} добавлен в белый список.")
+        await message.answer(f"Бот @{username} добавлен в {list_label}.")
     elif cmd == 'whitelist_remove':
         username = _normalize_username(args)
         if not username:
             await message.answer("Использование: /whitelist_remove <имя_бота>")
             return
         set_remove(message.chat.id, key_name, username)
-        await message.answer(f"Бот @{username} удалён из белого списка.")
+        await message.answer(f"Бот @{username} удалён из {list_label}.")
     else:  # whitelist_list
         members = sorted(set_members(message.chat.id, key_name))
         if not members:
-            await message.answer("Белый список пуст.")
+            await message.answer("Белый список пуст.", reply_markup=_list_keyboard(key_name, set()))
         else:
-            await message.answer("Белый список:\n" + "\n".join(f"@{m}" for m in members))
+            await message.answer(
+                "📋 <b>Белый список</b>",
+                parse_mode="html",
+                reply_markup=_list_keyboard(key_name, set(members))
+            )
+
+
+# ================= Unified callback query handler =================
+
+@dp.callback_query_handler()
+async def handle_callback(call: types.CallbackQuery):
+    """Handle all inline button presses — both group chat and DM."""
+    logging.info(f"Callback from user {call.from_user.id}, data: {call.data}")
+
+    data = call.data
+
+    # --- Group selector (DM only) ---
+    if data == "group_selector":
+        if not _is_bot_admin(call.from_user.id):
+            await call.answer("⛔ Доступ запрещён.", show_alert=True)
+            return
+        groups = await _get_admin_groups(call.from_user.id)
+        if not groups:
+            await call.message.edit_text(
+                "🔍 Вы не являетесь администратором ни в одной группе, где есть бот."
+            )
+            await call.answer()
+            return
+        await call.message.edit_text(
+            "📋 <b>Выберите группу для настройки:</b>",
+            parse_mode="html",
+            reply_markup=_group_selector_keyboard(groups)
+        )
+        await call.answer()
+        return
+
+    # --- Select group (DM only) ---
+    if data.startswith("select_group:"):
+        if not _is_bot_admin(call.from_user.id):
+            await call.answer("⛔ Доступ запрещён.", show_alert=True)
+            return
+        try:
+            chat_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await call.answer("Ошибка: неверный ID группы.")
+            return
+        # Verify user is still admin in this group
+        try:
+            member = await bot.get_chat_member(chat_id, call.from_user.id)
+            if not (hasattr(member, 'status') and member.status in ('creator', 'administrator')):
+                await call.answer("Вы больше не администратор этой группы.", show_alert=True)
+                return
+        except Exception:
+            await call.answer("Не удалось проверить права в группе.", show_alert=True)
+            return
+        chat_dict = await get_chat_dict(chat_id)
+        chat = await bot.get_chat(chat_id)
+        pv_prefix = f"pv:{chat_id}:"
+        await call.message.edit_text(
+            f"⚙️ <b>Настройки — {chat.title or f'Чат {chat_id}'}</b>",
+            parse_mode="html",
+            reply_markup=_settings_keyboard(chat_dict, pv_prefix)
+        )
+        await call.answer()
+        return
+
+    # --- Determine if this is a DM callback ---
+    pv_prefix = ''
+    target_chat_id = call.message.chat.id
+    if data.startswith("pv:"):
+        # Format: "pv:<chat_id>:<action>"
+        try:
+            _, chat_id_str, action = data.split(":", 2)
+            target_chat_id = int(chat_id_str)
+            pv_prefix = f"pv:{target_chat_id}:"
+            data = action  # strip prefix for matching below
+        except (ValueError, IndexError):
+            await call.answer("Ошибка: неверный формат данных.", show_alert=True)
+            return
+        # Verify user can manage this group
+        if not _is_bot_admin(call.from_user.id):
+            await call.answer("⛔ Доступ запрещён.", show_alert=True)
+            return
+    else:
+        # Group chat callback — admin check
+        if not await _ensure_admin_callback(call):
+            return
+
+    try:
+        # --- Toggle deletion ---
+        if data == "toggle:deletion":
+            chat_dict = await get_chat_dict(target_chat_id)
+            to_set = b'0' if chat_dict[b'deletion'] == b'1' else b'1'
+            chat_dict[b'deletion'] = to_set
+            save_chat_dict(target_chat_id, chat_dict)
+            await call.message.edit_text(
+                _settings_header(target_chat_id, pv_prefix),
+                parse_mode="html",
+                reply_markup=_settings_keyboard(chat_dict, pv_prefix)
+            )
+            await call.answer(f"Удаление {'включено' if to_set == b'1' else 'выключено'}")
+
+        # --- Toggle warnings ---
+        elif data == "toggle:q":
+            chat_dict = await get_chat_dict(target_chat_id)
+            to_set = b'0' if chat_dict[b'q'] == b'1' else b'1'
+            chat_dict[b'q'] = to_set
+            save_chat_dict(target_chat_id, chat_dict)
+            warnings_on = to_set == b'0'
+            await call.message.edit_text(
+                _settings_header(target_chat_id, pv_prefix),
+                parse_mode="html",
+                reply_markup=_settings_keyboard(chat_dict, pv_prefix)
+            )
+            await call.answer(f"Предупреждения {'включены' if warnings_on else 'выключены'}")
+
+        # --- Set mode ---
+        elif data in ("mode:all", "mode:blacklist", "mode:whitelist"):
+            mode = data.split(":", 1)[1]
+            chat_dict = await get_chat_dict(target_chat_id)
+            chat_dict[b'policy'] = mode.encode()
+            save_chat_dict(target_chat_id, chat_dict)
+            await call.message.edit_text(
+                _settings_header(target_chat_id, pv_prefix),
+                parse_mode="html",
+                reply_markup=_settings_keyboard(chat_dict, pv_prefix)
+            )
+            await call.answer(f"Режим: {MODE_NAMES[mode]}")
+
+        # --- Show list ---
+        elif data in ("list:blacklist", "list:whitelist"):
+            list_name = data.split(":", 1)[1]
+            list_label = "Чёрный список" if list_name == "blacklist" else "Белый список"
+            members = set_members(target_chat_id, list_name)
+            if not members:
+                await call.message.edit_text(
+                    f"📋 <b>{list_label}</b>\n\nСписок пуст.\n"
+                    f"Используйте /{list_name}_add &lt;имя_бота&gt; чтобы добавить.",
+                    parse_mode="html",
+                    reply_markup=_list_keyboard(list_name, set(), pv_prefix)
+                )
+            else:
+                await call.message.edit_text(
+                    f"📋 <b>{list_label}</b>",
+                    parse_mode="html",
+                    reply_markup=_list_keyboard(list_name, members, pv_prefix)
+                )
+            await call.answer()
+
+        # --- Remove from list ---
+        elif data.startswith("remove:blacklist:") or data.startswith("remove:whitelist:"):
+            parts = data.split(":", 2)
+            list_name = parts[1]
+            username = parts[2]
+            list_label = "чёрного списка" if list_name == "blacklist" else "белого списка"
+            list_title = "Чёрный список" if list_name == "blacklist" else "Белый список"
+            set_remove(target_chat_id, list_name, username)
+            members = set_members(target_chat_id, list_name)
+            if not members:
+                await call.message.edit_text(
+                    f"📋 <b>{list_title}</b>\n\nСписок пуст.\n"
+                    f"Используйте /{list_name}_add &lt;имя_бота&gt; чтобы добавить.",
+                    parse_mode="html",
+                    reply_markup=_list_keyboard(list_name, set(), pv_prefix)
+                )
+            else:
+                await call.message.edit_text(
+                    f"📋 <b>{list_title}</b>",
+                    parse_mode="html",
+                    reply_markup=_list_keyboard(list_name, members, pv_prefix)
+                )
+            await call.answer(f"@{username} удалён из {list_label}")
+
+        # --- Add hint ---
+        elif data.startswith("add_hint:"):
+            list_name = data.split(":", 1)[1]
+            cmd = f"/{list_name}_add"
+            await call.answer(
+                f"Используйте команду: {cmd} <имя_бота>",
+                show_alert=True
+            )
+
+        # --- Back to settings menu ---
+        elif data == "menu":
+            chat_dict = await get_chat_dict(target_chat_id)
+            await call.message.edit_text(
+                _settings_header(target_chat_id, pv_prefix),
+                parse_mode="html",
+                reply_markup=_settings_keyboard(chat_dict, pv_prefix)
+            )
+            await call.answer()
+
+        else:
+            logging.warning(f"Unknown callback data: {call.data}")
+            await call.answer("Неизвестная команда")
+
+    except Exception as e:
+        logging.error(f"Callback error: {e}")
+        await call.answer("Произошла ошибка. Попробуйте снова.", show_alert=True)
+
+
+async def _settings_header(chat_id: int, pv_prefix: str = '') -> str:
+    """Build settings panel header. In DM, includes group name."""
+    if pv_prefix:
+        try:
+            chat = await bot.get_chat(chat_id)
+            return f"⚙️ <b>Настройки — {chat.title or f'Чат {chat_id}'}</b>"
+        except Exception:
+            pass
+    return "⚙️ <b>Настройки Anti-Inline бота</b>"
 
 
 # ================= Catch-all handler for inline bot messages (MUST BE LAST) =================

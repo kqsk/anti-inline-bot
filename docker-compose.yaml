@@ -7,6 +7,7 @@ services:
     restart: unless-stopped
     environment:
       - TELEGRAM_API=${TELEGRAM_API}
+      - ADMIN_IDS=${ADMIN_IDS}
     volumes:
       - bot_settings:/app/src/settings
     # No ports — bot uses long polling, not webhooks
