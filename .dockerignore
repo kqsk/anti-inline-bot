@@ -1,0 +1,42 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+
+# Env files (keep out of image)
+.env
+.env.*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+src/secret_data/
+!src/secret_data/README.md
+
+# Docs / misc
+README.md
+LICENSE.md
+TESTING.md
+railway.toml
+Procfile
+monitor.sh
+*.log

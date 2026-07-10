@@ -1,0 +1,16 @@
+version: "3.8"
+
+services:
+  bot:
+    build: .
+    container_name: anti-inline-bot
+    restart: unless-stopped
+    environment:
+      - TELEGRAM_API=${TELEGRAM_API}
+    volumes:
+      - bot_settings:/app/src/settings
+    # No ports — bot uses long polling, not webhooks
+
+volumes:
+  bot_settings:
+    driver: local
