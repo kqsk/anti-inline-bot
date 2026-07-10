@@ -668,7 +668,7 @@ async def handle_callback(call: types.CallbackQuery):
             chat_dict[b'deletion'] = to_set
             save_chat_dict(target_chat_id, chat_dict)
             await call.message.edit_text(
-                _settings_header(target_chat_id, pv_prefix),
+                _settings_header(pv_prefix),
                 parse_mode="html",
                 reply_markup=_settings_keyboard(chat_dict, pv_prefix)
             )
@@ -682,7 +682,7 @@ async def handle_callback(call: types.CallbackQuery):
             save_chat_dict(target_chat_id, chat_dict)
             warnings_on = to_set == b'0'
             await call.message.edit_text(
-                _settings_header(target_chat_id, pv_prefix),
+                _settings_header(pv_prefix),
                 parse_mode="html",
                 reply_markup=_settings_keyboard(chat_dict, pv_prefix)
             )
@@ -695,7 +695,7 @@ async def handle_callback(call: types.CallbackQuery):
             chat_dict[b'policy'] = mode.encode()
             save_chat_dict(target_chat_id, chat_dict)
             await call.message.edit_text(
-                _settings_header(target_chat_id, pv_prefix),
+                _settings_header(pv_prefix),
                 parse_mode="html",
                 reply_markup=_settings_keyboard(chat_dict, pv_prefix)
             )
@@ -758,7 +758,7 @@ async def handle_callback(call: types.CallbackQuery):
         elif data == "menu":
             chat_dict = await get_chat_dict(target_chat_id)
             await call.message.edit_text(
-                _settings_header(target_chat_id, pv_prefix),
+                _settings_header(pv_prefix),
                 parse_mode="html",
                 reply_markup=_settings_keyboard(chat_dict, pv_prefix)
             )
@@ -773,14 +773,10 @@ async def handle_callback(call: types.CallbackQuery):
         await call.answer("Произошла ошибка. Попробуйте снова.", show_alert=True)
 
 
-async def _settings_header(chat_id: int, pv_prefix: str = '') -> str:
-    """Build settings panel header. In DM, includes group name."""
+def _settings_header(pv_prefix: str = '') -> str:
+    """Build settings panel header."""
     if pv_prefix:
-        try:
-            chat = await bot.get_chat(chat_id)
-            return f"⚙️ <b>Настройки — {chat.title or f'Чат {chat_id}'}</b>"
-        except Exception:
-            pass
+        return "⚙️ <b>Настройки группы</b>"
     return "⚙️ <b>Настройки Anti-Inline бота</b>"
 
 
